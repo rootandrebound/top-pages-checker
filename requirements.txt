@@ -2,3 +2,7 @@ flask
 requests
 gevent
 gunicorn
+google-api-python-client
+ipdb
+ipython
+honcho

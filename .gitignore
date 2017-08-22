@@ -89,6 +89,7 @@ ENV/
 include
 bin
 lib
+share
 pip-selfcheck.json
 pyvenv.cfg
 
@@ -107,3 +108,4 @@ pyvenv.cfg
 
 # secrets
 api.json
+
