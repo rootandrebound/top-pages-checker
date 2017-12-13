@@ -4,7 +4,9 @@ and then updates a json file in a github repo with the results.
 It is intended to be run about once per day.
 """
 import os
+import sys
 import io
+import urllib.parse as urlparse
 import requests
 import json
 from pprint import pprint
@@ -20,6 +22,27 @@ GOOGLE_API_JSON = os.environ.get("GOOGLE_API_JSON")
 S3_BUCKET_NAME = os.environ.get("S3_BUCKET_NAME")
 JSON_FILE_NAME = 'top_pages.json'
 NUMBER_OF_TOP_PAGES = 10
+PROTOCOL = 'http'
+HOST = 'roadmap.rootandrebound.org'
+BASE_DOMAIN = '{}://{}'.format(PROTOCOL, HOST)
+
+SEARCH_PAGE_TITLE_TEMPLATE = 'Search results for “{}”'
+
+
+def is_valid_top_page(page):
+    path = page['url'].replace('roadmap-to-html/','')
+    url = BASE_DOMAIN + path
+    response = requests.get(url)
+    is_valid = response.status_code == 200
+    print("Checking: '{}' ... {}".format(path, is_valid))
+    return is_valid
+
+
+def modify_titles_for_search_pages(pages):
+    for page in pages:
+        params = urlparse.parse_qs(urlparse.urlparse(page['url']).query)
+        if 'q' in params:
+            page['title'] = SEARCH_PAGE_TITLE_TEMPLATE.format(params['q'][0])
 
 
 def initialize_analyticsreporting(api_json_data):
@@ -42,7 +65,15 @@ def parse_top_page(raw_ga_dict):
         title=title.replace(' - Roadmap to Reentry', ''))
 
 
-def main():
+def filter_to_valid_pages_only(pages):
+    return [
+        page for page in pages
+        if is_valid_top_page(page)
+    ]
+
+
+
+def main(days_ago='30'):
     # create bucket if it doesnt exist
     print("Initializing connection to Amazon S3")
     s3 = boto3.client('s3')
@@ -56,10 +87,13 @@ def main():
     google_api_credentials = json.loads(
         GOOGLE_API_JSON.translate(str.maketrans({"\n": r"\n"})))
     analytics = initialize_analyticsreporting(google_api_credentials)
-    print("Requesting list of most visited pages")
+    print(
+        "Requesting list of most visited pages for past {} days".format(
+            days_ago))
+    start_date = '{}daysAgo'.format(days_ago)
     report_params = {
         'viewId': VIEW_ID,
-        'dateRanges': [{'startDate': '30daysAgo', 'endDate': 'today'}],
+        'dateRanges': [{'startDate': start_date, 'endDate': 'today'}],
         'metrics': [
             {'expression': 'ga:pageviews'},
             {'expression': 'ga:uniquePageviews'}
@@ -75,10 +109,21 @@ def main():
         body={'reportRequests': [report_params]}).execute()
     top_pages = [
         parse_top_page(row)
-        for row in response['reports'][0]['data']['rows'][:10]]
-    print("Received new list of top pages:")
-    pprint(top_pages)
-    top_pages_json = json.dumps(top_pages)
+        for row in response['reports'][0]['data']['rows'][:20]]
+    print("Received new list of top pages")
+    valid_top_pages = filter_to_valid_pages_only(top_pages)
+    invalid_pages = [
+        page for page in top_pages
+        if page not in valid_top_pages
+    ]
+    modify_titles_for_search_pages(valid_top_pages)
+    print("\nRESULTS: {} valid, {} invalid".format(
+        len(valid_top_pages), len(top_pages) - len(valid_top_pages)))
+    print("\nVALID:")
+    pprint(valid_top_pages)
+    print("\nINVALID:")
+    pprint(invalid_pages)
+    top_pages_json = json.dumps(valid_top_pages)
     top_pages_json_bytes = top_pages_json.encode('utf-8')
     json_file = io.BytesIO(top_pages_json_bytes)
     print("Saving top pages to '{}'".format(JSON_FILE_NAME))
@@ -89,4 +134,8 @@ def main():
     print("Complete.")
 
 if __name__ == '__main__':
-    main()
+    args = sys.argv
+    day_count = '30'
+    if len(args) > 1:
+        day_count = args[1]
+    main(days_ago=day_count)
